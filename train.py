@@ -11,7 +11,7 @@ from lightning.pytorch.loggers import WandbLogger
 from omegaconf import OmegaConf, open_dict
 
 from jepa import JEPA
-from module import ARPredictor, Embedder, MLP, SIGReg
+from module import ARPredictor, CrossAttnConditionalBlock, Embedder, MLP, SIGReg
 from utils import get_column_normalizer, get_img_preprocessor, ModelObjectCallBack
 
 
@@ -29,12 +29,13 @@ def lejepa_forward(self, batch, stage, cfg):
 
     emb = output["emb"]  # (B, T, D)
     act_emb = output["act_emb"]
+    lang_emb = output.get("lang_emb")  # (B, D) or None
 
     ctx_emb = emb[:, :ctx_len]
     ctx_act = act_emb[:, : ctx_len]
 
     tgt_emb = emb[:, n_preds:] # label
-    pred_emb = self.model.predict(ctx_emb, ctx_act) # pred
+    pred_emb = self.model.predict(ctx_emb, ctx_act, lang_emb=lang_emb) # pred
 
     # LeWM loss
     output["pred_loss"] = (pred_emb - tgt_emb).pow(2).mean()
@@ -90,17 +91,33 @@ def run(cfg):
     hidden_dim = encoder.config.hidden_size
     embed_dim = cfg.wm.get("embed_dim", hidden_dim)
     effective_act_dim = cfg.data.dataset.frameskip * cfg.wm.action_dim
+    fusion_type = cfg.wm.get("fusion_type", "none")
+
+    predictor_block_class = CrossAttnConditionalBlock if fusion_type == "cross_attn" else None
+    predictor_kwargs = dict(cfg.predictor)
+    if predictor_block_class is not None:
+        predictor_kwargs["block_class"] = predictor_block_class
 
     predictor = ARPredictor(
         num_frames=cfg.wm.history_size,
         input_dim=embed_dim,
         hidden_dim=hidden_dim,
         output_dim=hidden_dim,
-        **cfg.predictor,
+        **predictor_kwargs,
     )
 
     action_encoder = Embedder(input_dim=effective_act_dim, emb_dim=embed_dim)
-    
+
+    # Language encoder (if language-conditioned)
+    language_encoder = None
+    if fusion_type != "none" and hasattr(cfg.wm, "language_emb_dim"):
+        language_encoder = MLP(
+            input_dim=cfg.wm.language_emb_dim,
+            hidden_dim=2048,
+            output_dim=embed_dim,
+            norm_fn=torch.nn.LayerNorm,
+        )
+
     projector = MLP(
         input_dim=hidden_dim,
         output_dim=embed_dim,
@@ -121,6 +138,8 @@ def run(cfg):
         action_encoder=action_encoder,
         projector=projector,
         pred_proj=predictor_proj,
+        language_encoder=language_encoder,
+        fusion_type=fusion_type,
     )
 
     optimizers = {

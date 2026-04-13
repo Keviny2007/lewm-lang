@@ -1,0 +1,47 @@
+.env
+
+# Python cache / build artifacts
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Packaging / installer artifacts
+build/
+dist/
+*.egg-info/
+
+# Local tooling / editor
+.vscode/
+.idea/
+.claude/
+
+# OS files
+.DS_Store
+
+# Training / evaluation artifacts
+wandb/
+lightning_logs/
+outputs/
+multirun/
+
+# Runtime logs and result dumps
+logs/*.out
+logs/*.err
+results/*.json
+results/*.txt
+results/*.csv
+
+# Model checkpoints and serialized artifacts
+*.ckpt
+*.pth
+*.pt
+*.pkl

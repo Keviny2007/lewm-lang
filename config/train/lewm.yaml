@@ -47,6 +47,7 @@ wm:
   history_size: 3
   num_preds: 1
   embed_dim: 192
+  fusion_type: none
 
 predictor:
   depth: 6

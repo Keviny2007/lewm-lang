@@ -128,6 +128,63 @@ class Block(nn.Module):
         return x
 
 
+class CrossAttention(nn.Module):
+    """Cross-attention: queries attend to external context (key/value)."""
+
+    def __init__(self, dim, heads=8, dim_head=64, dropout=0.0):
+        super().__init__()
+        inner_dim = dim_head * heads
+        self.heads = heads
+        self.dropout = dropout
+        self.norm_q = nn.LayerNorm(dim)
+        self.norm_kv = nn.LayerNorm(dim)
+        self.to_q = nn.Linear(dim, inner_dim, bias=False)
+        self.to_kv = nn.Linear(dim, inner_dim * 2, bias=False)
+        self.to_out = nn.Sequential(nn.Linear(inner_dim, dim), nn.Dropout(dropout))
+
+    def forward(self, x, context):
+        """
+        x: (B, T, D) — queries
+        context: (B, S, D) — keys/values (language)
+        """
+        x_norm = self.norm_q(x)
+        ctx_norm = self.norm_kv(context)
+        q = rearrange(self.to_q(x_norm), "b t (h d) -> b h t d", h=self.heads)
+        kv = self.to_kv(ctx_norm).chunk(2, dim=-1)
+        k, v = (rearrange(t, "b s (h d) -> b h s d", h=self.heads) for t in kv)
+        drop = self.dropout if self.training else 0.0
+        out = F.scaled_dot_product_attention(q, k, v, dropout_p=drop)
+        out = rearrange(out, "b h t d -> b t (h d)")
+        return self.to_out(out)
+
+
+class CrossAttnConditionalBlock(nn.Module):
+    """Transformer block with AdaLN-zero conditioning AND cross-attention to language."""
+
+    def __init__(self, dim, heads, dim_head, mlp_dim, dropout=0.0):
+        super().__init__()
+        self.attn = Attention(dim, heads=heads, dim_head=dim_head, dropout=dropout)
+        self.cross_attn = CrossAttention(dim, heads=heads, dim_head=dim_head, dropout=dropout)
+        self.mlp = FeedForward(dim, mlp_dim, dropout=dropout)
+        self.norm1 = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
+        self.norm2 = nn.LayerNorm(dim, elementwise_affine=False, eps=1e-6)
+        self.adaLN_modulation = nn.Sequential(
+            nn.SiLU(), nn.Linear(dim, 6 * dim, bias=True)
+        )
+        nn.init.constant_(self.adaLN_modulation[-1].weight, 0)
+        nn.init.constant_(self.adaLN_modulation[-1].bias, 0)
+
+    def forward(self, x, c, lang_ctx=None):
+        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = (
+            self.adaLN_modulation(c).chunk(6, dim=-1)
+        )
+        x = x + gate_msa * self.attn(modulate(self.norm1(x), shift_msa, scale_msa))
+        if lang_ctx is not None:
+            x = x + self.cross_attn(x, lang_ctx)
+        x = x + gate_mlp * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
+        return x
+
+
 class Transformer(nn.Module):
     """Standard Transformer with support for AdaLN-zero blocks"""
 
@@ -170,7 +227,7 @@ class Transformer(nn.Module):
                 block_class(hidden_dim, heads, dim_head, mlp_dim, dropout)
             )
 
-    def forward(self, x, c=None):
+    def forward(self, x, c=None, lang_ctx=None):
 
         if hasattr(self, "input_proj"):
             x = self.input_proj(x)
@@ -179,7 +236,12 @@ class Transformer(nn.Module):
             c = self.cond_proj(c)
 
         for block in self.layers:
-            x = block(x) if isinstance(block, Block) else block(x, c)
+            if isinstance(block, Block):
+                x = block(x)
+            elif isinstance(block, CrossAttnConditionalBlock):
+                x = block(x, c, lang_ctx=lang_ctx)
+            else:
+                x = block(x, c)
         x = self.norm(x)
 
         if hasattr(self, "output_proj"):
@@ -257,8 +319,10 @@ class ARPredictor(nn.Module):
         dim_head=64,
         dropout=0.0,
         emb_dropout=0.0,
+        block_class=None,
     ):
         super().__init__()
+        block_class = block_class or ConditionalBlock
         self.pos_embedding = nn.Parameter(torch.randn(1, num_frames, input_dim))
         self.dropout = nn.Dropout(emb_dropout)
         self.transformer = Transformer(
@@ -270,16 +334,17 @@ class ARPredictor(nn.Module):
             dim_head,
             mlp_dim,
             dropout,
-            block_class=ConditionalBlock,
+            block_class=block_class,
         )
 
-    def forward(self, x, c):
+    def forward(self, x, c, lang_ctx=None):
         """
         x: (B, T, d)
         c: (B, T, act_dim)
+        lang_ctx: optional (B, 1, D) language context for cross-attention
         """
         T = x.size(1)
         x = x + self.pos_embedding[:, :T]
         x = self.dropout(x)
-        x = self.transformer(x, c)
+        x = self.transformer(x, c, lang_ctx=lang_ctx)
         return x
