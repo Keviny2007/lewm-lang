@@ -1,11 +1,15 @@
 dataset:
   num_steps: ${eval:'${wm.num_preds} + ${wm.history_size}'}
-  frameskip: 2
-  name: language_table_blocktoblock_4block_sim
+  frameskip: 5
+  name: pusht_expert_train_language
   keys_to_load:
     - pixels
     - action
+    - proprio
+    - state
     - language_emb
   keys_to_cache:
     - action
+    - proprio
+    - state
     - language_emb

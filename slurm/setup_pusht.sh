@@ -110,7 +110,7 @@ fi
 
 echo ""
 echo "=== Verifying ==="
-python -c "import stable_worldmodel as swm; import h5py; f = h5py.File('$STABLEWM_HOME/pusht_expert_train.h5'); print('pusht keys:', list(f.keys())[:10])"
-ls -lh "$STABLEWM_HOME/pusht/" 2>/dev/null || echo "pusht/ dir not found"
+python -c "import h5py; f = h5py.File('$STABLEWM_HOME/datasets/pusht_expert_train.h5'); print('pusht keys:', list(f.keys())[:10])"
+ls -lh "$STABLEWM_HOME/checkpoints/pusht/lewm_object.ckpt"
 
 echo "=== setup_pusht done ==="

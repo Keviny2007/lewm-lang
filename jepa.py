@@ -104,7 +104,7 @@ class JEPA(nn.Module):
         if lang_emb is not None:
             lang_emb = lang_emb.repeat_interleave(S, dim=0)  # (B, D) -> (BS, D)
 
-        # rollout predictor autoregressively for n_steps
+        # Roll out exactly one predicted state per future action block.
         HS = history_size
         for t in range(n_steps):
             act_emb = self.action_encoder(act)
@@ -115,13 +115,6 @@ class JEPA(nn.Module):
 
             next_act = act_future[:, t : t + 1, :]  # (BS, 1, action_dim)
             act = torch.cat([act, next_act], dim=1)  # (BS, T+1, action_dim)
-
-        # predict the last state
-        act_emb = self.action_encoder(act)  # (BS, T, A_emb)
-        emb_trunc = emb[:, -HS:]  # (BS, HS, D)
-        act_trunc = act_emb[:, -HS:]  # (BS, HS, A_emb)
-        pred_emb = self.predict(emb_trunc, act_trunc, lang_emb=lang_emb)[:, -1:]  # (BS, 1, D)
-        emb = torch.cat([emb, pred_emb], dim=1)
 
         # unflatten batch and sample dimensions
         pred_rollout = rearrange(emb, "(b s) ... -> b s ...", b=B, s=S)

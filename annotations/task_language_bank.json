@@ -1,0 +1,32 @@
+{
+  "pusht_expert_train": {
+    "canonical": "push the T-shaped block to the target pose",
+    "variants": [
+      "push the T-shaped block to the target pose",
+      "move the T block into the goal configuration",
+      "slide the T-shaped object until it matches the target pose",
+      "guide the T block to the target position and orientation",
+      "align the T-shaped block with the target pose"
+    ]
+  },
+  "tworoom": {
+    "canonical": "navigate from the start room to the goal room",
+    "variants": [
+      "navigate from the start room to the goal room",
+      "move through the rooms until you reach the goal room",
+      "travel from the initial room to the target room",
+      "go from the starting room to the designated goal room",
+      "find a path from the current room to the goal room"
+    ]
+  },
+  "reacher": {
+    "canonical": "move the end effector to the target",
+    "variants": [
+      "move the end effector to the target",
+      "guide the arm so the fingertip reaches the goal",
+      "reach the target with the end effector",
+      "move the robot hand to the goal position",
+      "steer the end effector until it touches the target"
+    ]
+  }
+}

@@ -40,8 +40,14 @@ results/*.json
 results/*.txt
 results/*.csv
 
+# Local cluster launch scripts / secrets
+slurm/
+
 # Model checkpoints and serialized artifacts
 *.ckpt
 *.pth
 *.pt
 *.pkl
+
+# misc
+docs/
