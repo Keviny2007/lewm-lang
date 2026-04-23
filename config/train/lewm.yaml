@@ -48,6 +48,7 @@ wm:
   num_preds: 1
   embed_dim: 192
   fusion_type: none
+  language_emb_dim: null
 
 predictor:
   depth: 6

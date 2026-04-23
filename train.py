@@ -60,8 +60,10 @@ def run(cfg):
             if col.startswith("pixels"):
                 continue
 
-            normalizer = get_column_normalizer(dataset, col, col)
-            transforms.append(normalizer)
+            # Precomputed language embeddings should stay in their original space.
+            if col != "language_emb":
+                normalizer = get_column_normalizer(dataset, col, col)
+                transforms.append(normalizer)
 
             setattr(cfg.wm, f"{col}_dim", dataset.get_dim(col))
 

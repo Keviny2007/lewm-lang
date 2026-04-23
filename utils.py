@@ -18,6 +18,7 @@ def get_column_normalizer(dataset, source: str, target: str):
     data = data[~torch.isnan(data).any(dim=1)]
     mean = data.mean(0, keepdim=True).clone()
     std = data.std(0, keepdim=True).clone()
+    std = torch.where(std > 0, std, torch.ones_like(std))
 
     def norm_fn(x):
         return ((x - mean) / std).float()
