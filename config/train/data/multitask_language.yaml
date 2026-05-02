@@ -1,0 +1,17 @@
+dataset:
+  name: multitask_language
+  num_steps: ${eval:'${wm.num_preds} + ${wm.history_size}'}
+  frameskip: 5
+  keys_to_load:
+    - pixels
+    - action
+    - language_emb
+  keys_to_cache:
+    - action
+  sources:
+    - task_key: tworoom
+      path: ${oc.env:TWOROOM_LANGUAGE_DATASET,/oscar/scratch/kyang128/tworoom_language_run/datasets/tworoom_language.h5}
+    - task_key: pusht_expert_train
+      path: ${oc.env:PUSHT_LANGUAGE_DATASET,/users/kyang128/.stable-wm/datasets/pusht_expert_train.h5}
+    - task_key: reacher
+      path: ${oc.env:REACHER_LANGUAGE_DATASET,/oscar/scratch/kyang128/reacher_dataset/reacher.h5}

@@ -1,175 +1,189 @@
-# Progress Log (LeWM + LIBERO Language)
+# Progress Log (LeWM Language Conditioning Pivot)
 
-This file tracks custom work added on top of the upstream `le-wm` repo.
+This file tracks project-specific changes and results after pivoting away from
+LIBERO toward `tworoom`, `pusht`, and `reacher`.
 
 ## Current Status
 
-- LIBERO conversion pipeline on Oscar is completed successfully.
-- Output artifact exists: `~/.stable-wm/libero.h5` (job `1366421`, ~5.86 GB reported).
-- Dataset was generated with strict language mode enabled and offline augmented language mappings.
+- Baseline reproduction is complete for `tworoom` and `pusht`.
+- Language-annotated training/eval is complete for `tworoom`, `pusht`, and `reacher`.
+- Training remains stable with language conditioning: no SIGReg collapse or NaN
+  issue remains in the final pipeline.
+- Current evidence suggests the model is **not meaningfully using language** in
+  the present single-task, canonical-prompt setup.
 
-## What Was Implemented
+## Repo / Pipeline Changes
 
-### 1) Robust LIBERO conversion support
+### 1) Dataset pivot and cleanup
 
-Updated `scripts/convert_libero.py` to support current `lerobot/libero` layout:
+- Removed LIBERO / CALVIN-specific train, eval, conversion, and SLURM pipeline
+  pieces from the active workflow.
+- Kept the repo focused on:
+  - `tworoom`
+  - `pusht`
+  - `reacher`
 
-- Recursive parquet discovery with symlink-following
-- LeRobot v3-style video lookup (`chunk/file` + episode timestamps)
-- Vector action column handling (`action` array column)
-- Better metadata fallbacks and error messages
+### 2) Language annotation pipeline
 
-### 2) Strict language controls
+Added a lightweight offline annotation flow:
 
-Added language safety controls to `scripts/convert_libero.py`:
+- `scripts/generate_task_language_bank.py`
+  - Generates canonical instructions / variants using OpenRouter.
+- `scripts/annotate_hdf5_language.py`
+  - Writes `language_emb` and `language_variant_idx` into HDF5 datasets.
+  - Supports `--inplace` to avoid duplicating very large files.
+- `annotations/task_language_bank.json`
+  - Static task language source of truth.
 
-- `--require_language`: fail if real language mapping is unavailable
-- `--task_map_json`: inject canonical / augmented task mappings
+Added language-aware dataset configs:
 
-### 3) Language variant support in conversion
+- `config/train/data/tworoom_language.yaml`
+- `config/train/data/pusht_language.yaml`
+- `config/train/data/reacher_language.yaml`
 
-`convert_libero.py` now supports task maps where values are lists:
+### 3) Language-conditioned model path
 
-- `task_index -> [variant_1, variant_2, ...]`
-- `--lang_variant_policy {first,random}`
-- `--lang_seed` for deterministic random selection
+Integrated language conditioning into LeWM:
 
-### 4) Offline augmentation script
+- `train.py`
+  - Builds a language encoder when `wm.fusion_type != none`
+  - Skips normalization for `language_emb`
+- `jepa.py`
+  - Threads `language_emb -> lang_emb -> predictor`
+- `module.py`
+  - Supports `cross_attn` fusion through `CrossAttnConditionalBlock`
 
-Added `scripts/augment_libero_language.py`:
+### 4) Training / eval infrastructure
 
-- Input: canonical map JSON (`task_index -> instruction`)
-- Output: augmented map JSON (`task_index -> [variants...]`)
-- Configurable `--variants_per_task` and `--seed`
+Added scratch-backed Oscar workflows:
 
-### 5) Canonical task map file
+- `slurm/train_eval_tworoom_language.sh`
+- `slurm/train_eval_pusht_language.sh`
+- `slurm/train_eval_reacher_language.sh`
+- `slurm/eval_tworoom_language.sh`
 
-Added `annotations/libero_task_map_canonical.json`:
+These scripts:
 
-- Contains 40 canonical instructions (task indices `0..39`)
-- Derived from official LIBERO benchmark suite task definitions
-- Used as seed input for augmentation
+- request A5000 GPUs
+- keep checkpoints/results on scratch
+- use the language-annotated datasets
+- run train and downstream eval in the same structure as the baseline runs
 
-### 6) Oscar SLURM pipeline update
+## Important Fixes
 
-Updated `slurm/download_libero.sh` to:
+### 1) Hydra config fix
 
-1. Run offline augmentation
-2. Remove stale `~/.stable-wm/libero.h5`
-3. Run strict conversion with:
-   - `--require_language`
-   - `--task_map_json annotations/libero_task_map_augmented.json`
-   - `--lang_variant_policy random`
-   - `--lang_seed 0`
+- Added `wm.language_emb_dim: null` to `config/train/lewm.yaml`
+- This allows language-conditioned overrides like `wm.language_emb_dim=512`
 
-## Key Output Verification
+### 2) NaN fix in language training
 
-From latest logs (`download_libero_1366421`):
+Initial language runs produced `NaN` losses because `language_emb` was being
+normalized like a regular feature despite being constant within a dataset under
+canonical-only prompting.
 
-- `Wrote augmented map for 40 tasks`
-- `Loaded 40 task mappings from override`
-- `Converted 1693 episodes (0 skipped)`
-- `Done. 5.86 GB`
+Fixes:
 
-## Phase 2: Vision-Only Baseline (Completed)
+- `train.py`
+  - do not normalize `language_emb`
+- `utils.py`
+  - clamp zero-variance normalizer denominators to `1`
 
-### Training
+### 3) Eval dataset-name fixes
 
-- Trained standard LeWM (no language) on LIBERO for **78 epochs** (~8 hours, 1 GPU)
-- Config: `data=libero_vision_only`, `img_size=96`, batch_size=128
-- WandB run: `kevin_c_yang-brown-university/dl-project/lewm_libero_baseline`
-- Job 1373748 on Oscar (hit 8h wall time, 78 epochs completed)
+Language eval initially failed because eval configs still pointed to baseline
+dataset names like `tworoom` instead of `tworoom_language`.
 
-### Baseline Results (epoch 39)
+Fixed by overriding eval dataset names in the language SLURM scripts.
 
-| Metric | Value |
-|--------|-------|
-| Val pred_loss | ~0.003 |
-| Val sigreg_loss | ~1.3 |
-| Val total loss | ~0.12 |
+## Oscar Dataset State
 
-### Dimensional Collapse Analysis (epoch 39)
+### Tworoom
 
-| Metric | Value |
-|--------|-------|
-| Embedding dim | 192 |
-| Effective rank (>1%) | 154 / 192 (80.2%) |
-| Effective rank (>0.1%) | 188 / 192 |
-| Condition number | 2744.89 |
-| Status | **Healthy — no collapse** |
+- Language dataset:
+  `/oscar/scratch/kyang128/tworoom_language_run/datasets/tworoom_language.h5`
 
-Checkpoints: `~/.stable-wm/lewm_libero_baseline_epoch_{1..39}_object.ckpt`
+### PushT
 
-## Phase 3: Language-Conditioned Training (Completed)
+- Annotated in place due to home quota pressure:
+  `/users/kyang128/.stable-wm/datasets/pusht_expert_train.h5`
+- Symlink used for language name:
+  `/users/kyang128/.stable-wm/datasets/pusht_expert_train_language.h5`
 
-### A) Model/data plumbing
+### Reacher
 
-- `language_emb` loaded and normalized via existing HDF5 pipeline (`config/train/data/libero.yaml`)
-- Added `language_encoder` (MLP: 512 → 192) to JEPA
-- `fusion_type` config switch: `none`, `early`, `cross_attn`
-- Forward pass threads `lang_emb` through encode → predict
+- Extracted and annotated on scratch:
+  `/oscar/scratch/kyang128/reacher_dataset/reacher.h5`
 
-### B) Architecture integration
+## Results
 
-Two fusion variants implemented:
+### Baseline vs language
 
-1. **Early fusion** (`wm.fusion_type=early`): Language embedding added to action conditioning signal (AdaLN-zero modulation). Language acts as a bias on the action conditioning across all timesteps.
+| Task | Baseline | Language | Delta |
+|------|----------|----------|-------|
+| `tworoom` | `0.84` | `0.88` | `+0.04` |
+| `pusht` | `0.98` | `0.92` | `-0.06` |
+| `reacher` | not recovered from current logs | `0.94` | pending |
 
-2. **Cross-attention fusion** (`wm.fusion_type=cross_attn`): Added `CrossAttnConditionalBlock` with cross-attention layers where visual state (Q) attends to language embedding (K/V). Language acts as a contextual filter deeper in the predictor network.
+### Main takeaway
 
-Training completed on Oscar (8h, 1 GPU each, 6 CPUs):
-- Early fusion: job 1407033, ~75 epochs, 36 checkpoints saved
-- Cross-attention: job 1407035, ~69 epochs, 30 checkpoints saved
+- Language conditioning does **not** inherently destabilize LeWM.
+- The effect on downstream success is task-dependent.
+- Current evidence does **not** support the claim that the model is using
+  language semantically in this setup.
 
-### C) Validation results
+## Language-Use Ablation
 
-#### Loss comparison (WandB overlay, all 3 runs)
+To test whether the `tworoom` language model actually uses text, eval-time
+language ablations were added to `eval.py`:
 
-**Val pred_loss**: Early fusion tracks identically with baseline (~0.002). Cross-attention converges slower but reaches the same ballpark by ~60k steps.
+- `normal`
+- `zero`
+- `random`
+- `permute` (not informative for constant-prompt single-task runs)
 
-**Val sigreg_loss**: All three converge to ~1.3. No degradation from language injection.
+Also added cross-attention residual logging:
 
-#### Dimensional Collapse Analysis (3-way comparison)
+- `module.py`
+- `jepa.py`
 
-| Metric | Baseline (ep39) | Early Fusion (ep36) | Cross-Attn (ep30) |
-|--------|----------------|--------------------|--------------------|
-| Effective rank (>1%) | 154/192 (80.2%) | 151/192 (78.6%) | 142/192 (74.0%) |
-| Effective rank (>0.1%) | 188/192 | 187/192 | 185/192 |
-| Condition number | 2744.89 | 2409.28 | 2103.40 |
-| Status | Healthy | Healthy | Healthy |
+### Tworoom ablation results
 
-**Key findings:**
-- **SIGReg prevents collapse in all variants** — the core proposal hypothesis is confirmed
-- **Early fusion** has minimal impact on effective rank (80.2% → 78.6%), tracks baseline loss curves exactly
-- **Cross-attention** has slightly lower effective rank (74.0%) but the best condition number (2103), suggesting more uniform spread across dimensions
-- Language embeddings do not destabilize the latent space under SIGReg regularization
+| Condition | Success |
+|-----------|---------|
+| normal | `88.0` |
+| zero | `90.0` |
+| random | `88.0` |
 
-## Repro Commands (Oscar)
+### Cross-attention debug
 
-```bash
-# Data conversion
-cd ~/scratch/lewm
-source .venv-tfds/bin/activate
-python scripts/augment_libero_language.py \
-  --input annotations/libero_task_map_canonical.json \
-  --output annotations/libero_task_map_augmented.json \
-  --variants_per_task 8 \
-  --seed 0
+Approximate `cross_attn_ratio_mean`:
 
-python scripts/convert_libero.py \
-  --out_dir ~/.stable-wm \
-  --img_size 96 \
-  --require_language \
-  --task_map_json annotations/libero_task_map_augmented.json \
-  --lang_variant_policy random \
-  --lang_seed 0
+- normal: `~0.0075`
+- zero: `~0.07`
+- random: `~0.05`
 
-# Training (activate .venv, not .venv-tfds)
-source .venv/bin/activate
-python train.py data=libero_vision_only img_size=96 output_model_name=lewm_libero_baseline
-python train.py data=libero img_size=96 wm.fusion_type=early output_model_name=lewm_libero_early_fusion
-python train.py data=libero img_size=96 wm.fusion_type=cross_attn output_model_name=lewm_libero_cross_attn
+### Ablation conclusion
 
-# Collapse analysis
-python scripts/check_collapse.py --ckpt <path_to_ckpt> --dataset libero --img_size 96
-```
+- Zeroing or randomizing language does not hurt performance.
+- In this setup, the language branch contributes only a tiny residual under the
+  real prompt.
+- The current single-task, canonical-prompt design is therefore consistent with
+  the model largely ignoring language.
+
+## Next Step
+
+Move to a **joint multi-task language-conditioned model** across:
+
+- `tworoom`
+- `pusht`
+- `reacher`
+
+Then evaluate with:
+
+- correct task text
+- swapped task text
+- ablated text
+
+That will create an identifiable test of whether the model actually uses
+language rather than merely tolerating it.

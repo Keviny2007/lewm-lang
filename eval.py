@@ -3,6 +3,8 @@ import os
 os.environ["MUJOCO_GL"] = "egl"
 
 import time
+from copy import deepcopy
+import json
 from pathlib import Path
 
 import hydra
@@ -13,6 +15,77 @@ from omegaconf import DictConfig, OmegaConf
 from sklearn import preprocessing
 from torchvision.transforms import v2 as transforms
 import stable_worldmodel as swm
+from transformers import CLIPTextModel, CLIPTokenizer
+
+
+class LanguageAblationDataset:
+    """Wrap a dataset and optionally perturb language embeddings at eval time."""
+
+    def __init__(
+        self,
+        dataset,
+        mode="normal",
+        seed=0,
+        override_language_emb=None,
+    ):
+        self.dataset = dataset
+        self.mode = mode
+        self.rng = np.random.default_rng(seed)
+        self.override_language_emb = override_language_emb
+
+    def __getattr__(self, name):
+        return getattr(self.dataset, name)
+
+    def load_chunk(self, episodes_idx, start, end):
+        chunk = self.dataset.load_chunk(episodes_idx, start, end)
+        if self.override_language_emb is not None:
+            chunk = [deepcopy(ep) for ep in chunk]
+            for ep in chunk:
+                lang = ep.get("language_emb")
+                if lang is None:
+                    continue
+                if isinstance(lang, torch.Tensor):
+                    override = torch.from_numpy(self.override_language_emb).to(
+                        device=lang.device, dtype=lang.dtype
+                    )
+                    ep["language_emb"] = override.unsqueeze(0).expand_as(lang).clone()
+                else:
+                    ep["language_emb"] = np.broadcast_to(
+                        self.override_language_emb[None, :], lang.shape
+                    ).astype(lang.dtype, copy=True)
+            return chunk
+
+        if self.mode == "normal":
+            return chunk
+
+        if len(chunk) == 0 or "language_emb" not in chunk[0]:
+            return chunk
+
+        chunk = [deepcopy(ep) for ep in chunk]
+        if self.mode == "zero":
+            for ep in chunk:
+                ep["language_emb"] = np.zeros_like(ep["language_emb"])
+            return chunk
+
+        if self.mode == "random":
+            for ep in chunk:
+                lang = ep["language_emb"]
+                if isinstance(lang, torch.Tensor):
+                    ep["language_emb"] = torch.randn_like(lang)
+                else:
+                    ep["language_emb"] = self.rng.standard_normal(
+                        size=lang.shape
+                    ).astype(lang.dtype, copy=False)
+            return chunk
+
+        if self.mode == "permute":
+            perm = self.rng.permutation(len(chunk))
+            lang_bank = [chunk[i]["language_emb"].copy() for i in perm]
+            for ep, lang in zip(chunk, lang_bank):
+                ep["language_emb"] = lang
+            return chunk
+
+        raise ValueError(f"Unknown lang_eval.mode={self.mode!r}")
 
 def img_transform(cfg):
     transform = transforms.Compose(
@@ -24,6 +97,19 @@ def img_transform(cfg):
         ]
     )
     return transform
+
+
+def load_clip(device="cpu"):
+    model_name = "openai/clip-vit-base-patch32"
+    tokenizer = CLIPTokenizer.from_pretrained(model_name)
+    model = CLIPTextModel.from_pretrained(model_name).to(device).eval()
+    return tokenizer, model
+
+
+@torch.no_grad()
+def encode_text(text, tokenizer, model, device):
+    inputs = tokenizer([text], padding=True, truncation=True, return_tensors="pt").to(device)
+    return model(**inputs).pooler_output[0].detach().cpu().float().numpy()
 
 
 def get_episodes_length(dataset, episodes):
@@ -90,6 +176,9 @@ def run(cfg: DictConfig):
         model = model.eval()
         model.requires_grad_(False)
         model.interpolate_pos_encoding = True
+        model.debug_language_stats = bool(
+            cfg.get("lang_eval", {}).get("debug_cross_attn", False)
+        )
         config = swm.PlanConfig(**cfg.plan_config)
         solver = hydra.utils.instantiate(cfg.solver, model=model)
         policy = swm.policy.WorldModelPolicy(
@@ -139,8 +228,39 @@ def run(cfg: DictConfig):
     world.set_policy(policy)
 
     start_time = time.time()
-    metrics = world.evaluate_from_dataset(
+    lang_eval_cfg = cfg.get("lang_eval", {})
+    override_language_emb = None
+    if lang_eval_cfg.get("override_task_key"):
+        annotations_path = Path(lang_eval_cfg.get("annotations_path", "annotations/task_language_bank.json"))
+        with annotations_path.open(encoding="utf-8") as f:
+            bank = json.load(f)
+        task_key = lang_eval_cfg.override_task_key
+        if task_key not in bank:
+            raise KeyError(f"override_task_key={task_key!r} missing from {annotations_path}")
+        text = str(bank[task_key]["canonical"]).strip()
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        tokenizer, clip_model = load_clip(device)
+        override_language_emb = encode_text(text, tokenizer, clip_model, device).astype(np.float32)
+        print(
+            f"[lang eval] overriding language with canonical prompt for task_key={task_key}",
+            flush=True,
+        )
+
+    dataset_for_eval = LanguageAblationDataset(
         dataset,
+        mode=lang_eval_cfg.get("mode", "normal"),
+        seed=lang_eval_cfg.get("seed", cfg.seed),
+        override_language_emb=override_language_emb,
+    )
+
+    if lang_eval_cfg.get("mode", "normal") != "normal":
+        print(
+            f"[lang eval] applying language ablation mode={lang_eval_cfg.get('mode')}",
+            flush=True,
+        )
+
+    metrics = world.evaluate_from_dataset(
+        dataset_for_eval,
         start_steps=eval_start_idx.tolist(),
         goal_offset_steps=cfg.eval.goal_offset_steps,
         eval_budget=cfg.eval.eval_budget,

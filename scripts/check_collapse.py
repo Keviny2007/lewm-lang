@@ -8,12 +8,17 @@ Loads a checkpoint, encodes validation data, and reports:
 
 import argparse
 from pathlib import Path
+import sys
 
 import numpy as np
 import stable_worldmodel as swm
 import stable_pretraining as spt
 import torch
 from torchvision.transforms import v2 as transforms
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 
 def img_transform(img_size):
@@ -34,12 +39,20 @@ def main():
     parser.add_argument("--num_samples", type=int, default=2000,
                         help="Number of frames to encode")
     parser.add_argument("--batch_size", type=int, default=64)
+    parser.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda"])
     args = parser.parse_args()
+
+    if args.device == "auto":
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    else:
+        device = args.device
+    if device == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("Requested --device=cuda but CUDA is not available")
 
     # Load model
     print(f"Loading checkpoint: {args.ckpt}")
     model = torch.load(args.ckpt, map_location="cpu", weights_only=False)
-    model = model.cuda().eval()
+    model = model.to(device).eval()
 
     # Load dataset
     cache_dir = Path(args.cache_dir or swm.data.utils.get_cache_dir())
@@ -67,7 +80,7 @@ def main():
             pix = transform(pix[0])  # (C, H, W) float32 normalized
             frames.append(pix)
 
-        pixels = torch.stack(frames).unsqueeze(1).cuda()  # (B, 1, C, H, W)
+        pixels = torch.stack(frames).unsqueeze(1).to(device)  # (B, 1, C, H, W)
         info = {"pixels": pixels}
         output = model.encode(info)
         emb = output["emb"][:, 0]  # (B, D)

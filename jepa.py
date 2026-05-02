@@ -67,6 +67,30 @@ class JEPA(nn.Module):
             lang_ctx = lang_emb.unsqueeze(1)  # (B, 1, D)
 
         preds = self.predictor(emb, act_emb, lang_ctx=lang_ctx)
+        if lang_ctx is not None and getattr(self, "debug_language_stats", False):
+            ratios = []
+            output_norms = []
+            context_norms = []
+            for block in getattr(self.predictor.transformer, "layers", []):
+                if hasattr(block, "last_cross_attn_ratio"):
+                    ratios.append(block.last_cross_attn_ratio)
+                    output_norms.append(
+                        getattr(block, "last_cross_attn_output_norm", float("nan"))
+                    )
+                    context_norms.append(
+                        getattr(block.cross_attn, "last_context_norm", float("nan"))
+                    )
+            if ratios and getattr(self, "_lang_debug_count", 0) < 3:
+                print(
+                    "      [lang debug] cross_attn_ratio_mean="
+                    f"{sum(ratios) / len(ratios):.4f}, "
+                    "cross_attn_out_norm_mean="
+                    f"{sum(output_norms) / len(output_norms):.4f}, "
+                    "lang_ctx_norm_mean="
+                    f"{sum(context_norms) / len(context_norms):.4f}",
+                    flush=True,
+                )
+                self._lang_debug_count = getattr(self, "_lang_debug_count", 0) + 1
         preds = self.pred_proj(rearrange(preds, "b t d -> (b t) d"))
         preds = rearrange(preds, "(b t) d -> b t d", b=emb.size(0))
         return preds

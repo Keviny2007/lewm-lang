@@ -155,7 +155,12 @@ class CrossAttention(nn.Module):
         drop = self.dropout if self.training else 0.0
         out = F.scaled_dot_product_attention(q, k, v, dropout_p=drop)
         out = rearrange(out, "b h t d -> b t (h d)")
-        return self.to_out(out)
+        out = self.to_out(out)
+        with torch.no_grad():
+            self.last_output_norm = out.norm(dim=-1).mean().item()
+            self.last_query_norm = x.norm(dim=-1).mean().item()
+            self.last_context_norm = context.norm(dim=-1).mean().item()
+        return out
 
 
 class CrossAttnConditionalBlock(nn.Module):
@@ -180,7 +185,14 @@ class CrossAttnConditionalBlock(nn.Module):
         )
         x = x + gate_msa * self.attn(modulate(self.norm1(x), shift_msa, scale_msa))
         if lang_ctx is not None:
-            x = x + self.cross_attn(x, lang_ctx)
+            cross = self.cross_attn(x, lang_ctx)
+            with torch.no_grad():
+                x_norm = x.norm(dim=-1).mean().item()
+                cross_norm = cross.norm(dim=-1).mean().item()
+                self.last_cross_attn_input_norm = x_norm
+                self.last_cross_attn_output_norm = cross_norm
+                self.last_cross_attn_ratio = cross_norm / max(x_norm, 1e-8)
+            x = x + cross
         x = x + gate_mlp * self.mlp(modulate(self.norm2(x), shift_mlp, scale_mlp))
         return x
 

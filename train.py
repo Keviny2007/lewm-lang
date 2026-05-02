@@ -11,6 +11,7 @@ from lightning.pytorch.loggers import WandbLogger
 from omegaconf import OmegaConf, open_dict
 
 from jepa import JEPA
+from multitask_dataset import CompositeHDF5Dataset
 from module import ARPredictor, CrossAttnConditionalBlock, Embedder, MLP, SIGReg
 from utils import get_column_normalizer, get_img_preprocessor, ModelObjectCallBack
 
@@ -52,7 +53,11 @@ def run(cfg):
     ##       dataset       ##
     #########################
 
-    dataset = swm.data.HDF5Dataset(**cfg.data.dataset, transform=None)
+    dataset_cfg = OmegaConf.to_container(cfg.data.dataset, resolve=True)
+    if dataset_cfg.get("sources"):
+        dataset = CompositeHDF5Dataset(**dataset_cfg, transform=None)
+    else:
+        dataset = swm.data.HDF5Dataset(**cfg.data.dataset, transform=None)
     transforms = [get_img_preprocessor(source='pixels', target='pixels', img_size=cfg.img_size)]
     
     with open_dict(cfg):
@@ -75,8 +80,17 @@ def run(cfg):
         dataset, lengths=[cfg.train_split, 1 - cfg.train_split], generator=rnd_gen
     )
 
-    train = torch.utils.data.DataLoader(train_set, **cfg.loader,shuffle=True, drop_last=True, generator=rnd_gen)
-    val = torch.utils.data.DataLoader(val_set, **cfg.loader, shuffle=False, drop_last=False)
+    loader_cfg = OmegaConf.to_container(cfg.loader, resolve=True)
+    if loader_cfg.get("num_workers", 0) == 0:
+        loader_cfg["persistent_workers"] = False
+        loader_cfg.pop("prefetch_factor", None)
+
+    train = torch.utils.data.DataLoader(
+        train_set, **loader_cfg, shuffle=True, drop_last=True, generator=rnd_gen
+    )
+    val = torch.utils.data.DataLoader(
+        val_set, **loader_cfg, shuffle=False, drop_last=False
+    )
     
     ##############################
     ##       model / optim      ##

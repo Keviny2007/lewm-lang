@@ -21,6 +21,8 @@ def get_column_normalizer(dataset, source: str, target: str):
     std = torch.where(std > 0, std, torch.ones_like(std))
 
     def norm_fn(x):
+        if not torch.is_tensor(x):
+            x = torch.as_tensor(x)
         return ((x - mean) / std).float()
 
     normalizer = dt.transforms.WrapTorchTransform(norm_fn, source=source, target=target)
